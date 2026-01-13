@@ -48,6 +48,34 @@ GridWise 是一款专为创意工作者和社交媒体运营设计的专业级�
     *   裁剪图片至理想范围。
     *   调整九宫格行列数，点击“下载全部”或“下载选中部分”。
 
+### 💻 本地开发
+
+如果您希望在本地运行或二次开发本项目，请确保您的环境已安装 Node.js。
+
+1.  **克隆仓库**
+    ```bash
+    git clone https://github.com/gycodex/GridWise.git
+    cd gridwise
+    ```
+
+2.  **安装依赖**
+    ```bash
+    npm install
+    # 或者使用 yarn / pnpm
+    yarn install
+    ```
+
+3.  **启动开发服务器**
+    ```bash
+    npm run dev
+    ```
+    打开浏览器访问 `http://localhost:5173` 即可预览。
+
+4.  **构建生产版本**
+    ```bash
+    npm run build
+    ```
+
 ---
 
 ## English
@@ -93,8 +121,32 @@ GridWise is a professional-grade image processing tool designed for creators and
     *   Crop the image to the desired composition.
     *   Adjust grid rows/columns and click "Download All" or "Download Selected".
 
+### 💻 Local Development
+
+To run or modify this project locally, ensure you have Node.js installed.
+
+1.  **Clone the repository**
+    ```bash
+    git clone https://github.com/gycodex/GridWise.git
+    cd gridwise
+    ```
+
+2.  **Install dependencies**
+    ```bash
+    npm install
+    # or using yarn / pnpm
+    yarn install
+    ```
+
+3.  **Start development server**
+    ```bash
+    npm run dev
+    ```
+    Open `http://localhost:5173` in your browser.
+
+4.  **Build for production**
+    ```bash
+    npm run build
+    ```
+
 ---
-
-## License
-
-This project is licensed under the MIT License.
