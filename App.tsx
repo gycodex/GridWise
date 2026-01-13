@@ -1,9 +1,10 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { ControlPanel } from './components/ControlPanel';
 import { ImagePreview } from './components/ImagePreview';
 import { splitImage, cropImage, processBackgroundRemoval } from './utils/imageProcessor';
-import { AppState, ImageFormat, CropData, BackgroundConfig } from './types';
+import { processEnhancement } from './utils/tfEnhancer';
+import { AppState, ImageFormat, CropData, BackgroundConfig, EnhanceConfig } from './types';
 import { translations, Language } from './translations';
 
 const DEFAULT_BG_CONFIG: BackgroundConfig = {
@@ -15,11 +16,26 @@ const DEFAULT_BG_CONFIG: BackgroundConfig = {
   previewBg: false
 };
 
+const DEFAULT_ENHANCE_CONFIG: EnhanceConfig = {
+  scale: 2,
+  sharpness: 20
+};
+
+interface PipelineState {
+    original: string | null;
+    step1Result: string | null; // Result of Enhance
+    step2Result: string | null; // Result of BG Removal (applied on step1Result or original)
+}
+
 function App() {
   const [lang, setLang] = useState<Language>('zh');
   const [appState, setAppState] = useState<AppState>(AppState.IDLE);
-  const [imageSrc, setImageSrc] = useState<string | null>(null);
-  const [originalImageSrc, setOriginalImageSrc] = useState<string | null>(null);
+  
+  // Pipeline State
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
+  const [pipeline, setPipeline] = useState<PipelineState>({ original: null, step1Result: null, step2Result: null });
+  const [isEnhanceApplied, setIsEnhanceApplied] = useState(false);
+
   const [fileName, setFileName] = useState<string>('image.png');
   const [rows, setRows] = useState<number>(3);
   const [cols, setCols] = useState<number>(3);
@@ -29,24 +45,24 @@ function App() {
   const [quality, setQuality] = useState<number>(0.92);
   const [selectedTiles, setSelectedTiles] = useState<Set<number>>(new Set());
   const [isCropping, setIsCropping] = useState(false);
+  
   const [bgConfig, setBgConfig] = useState<BackgroundConfig>(DEFAULT_BG_CONFIG);
+  const [enhanceConfig, setEnhanceConfig] = useState<EnhanceConfig>(DEFAULT_ENHANCE_CONFIG);
   const currentCrop = useRef<CropData | null>(null);
 
   const t = translations[lang];
 
-  const handleBgRemoval = async () => {
-    if (!originalImageSrc) return;
-    setAppState(AppState.PROCESSING);
-    try {
-      const processed = await processBackgroundRemoval(originalImageSrc, bgConfig);
-      setImageSrc(processed);
-      setAppState(AppState.PREVIEW);
-    } catch (err) {
-      setError(t.bgProcessError);
-      setAppState(AppState.PREVIEW);
-    }
+  // Derive the current image to display based on step
+  const getDisplayImage = () => {
+      if (currentStep === 1) return pipeline.step1Result || pipeline.original;
+      if (currentStep === 2) return pipeline.step2Result || pipeline.step1Result || pipeline.original;
+      if (currentStep === 3) return pipeline.step2Result || pipeline.step1Result || pipeline.original;
+      return pipeline.original;
   };
 
+  const currentDisplayImage = getDisplayImage();
+
+  // Reset pipeline when a new file is loaded
   const processFile = (file: File) => {
     if (!file.type.startsWith('image/')) {
       setError(t.invalidImage);
@@ -56,24 +72,75 @@ function App() {
     reader.onload = (event) => {
       if (event.target?.result) {
         const src = event.target.result as string;
-        setImageSrc(src);
-        setOriginalImageSrc(src);
+        setPipeline({ original: src, step1Result: src, step2Result: src }); // Initialize all with original
         setFileName(file.name);
         setAppState(AppState.PREVIEW);
+        setCurrentStep(1);
+        setIsEnhanceApplied(false);
         setError(null);
         setSelectedTiles(new Set());
         setBgConfig(DEFAULT_BG_CONFIG);
+        setEnhanceConfig(DEFAULT_ENHANCE_CONFIG);
       }
     };
     reader.readAsDataURL(file);
   };
 
-  const handleApplyCrop = async () => {
-    if (!imageSrc || !currentCrop.current) return;
+  // Step 1: Enhancement Logic
+  const handleEnhancement = async () => {
+    if (!pipeline.original) return;
+    setAppState(AppState.PROCESSING);
     try {
-      const croppedImage = await cropImage(imageSrc, currentCrop.current);
-      setImageSrc(croppedImage);
-      setOriginalImageSrc(croppedImage);
+      const processed = await processEnhancement(pipeline.original, enhanceConfig);
+      setPipeline(prev => ({ 
+          ...prev, 
+          step1Result: processed,
+          // If we enhance, invalidate step 2 result effectively by resetting it or letting it remain?
+          // For linear flow, we should propagate change. 
+          // Since Step 2 hasn't been "applied" by user explicitly on this new image yet, 
+          // we can reset step 2 to this new enhanced image OR re-apply existing BG config?
+          // Let's reset step 2 to be the enhanced image to start fresh on step 2.
+          step2Result: processed 
+      }));
+      setIsEnhanceApplied(true);
+    } catch (err) {
+      console.error(err);
+      setError(t.enhanceError);
+    } finally {
+      setAppState(AppState.PREVIEW);
+    }
+  };
+
+  // Step 2: BG Removal Logic
+  // This is called when user tweaks params in Step 2.
+  const handleBgRemoval = async () => {
+    // Input for Step 2 is always Step 1 Result (or original if step 1 skipped/failed, handled by init)
+    const inputImage = pipeline.step1Result || pipeline.original;
+    if (!inputImage) return;
+    
+    setAppState(AppState.PROCESSING);
+    try {
+      const processed = await processBackgroundRemoval(inputImage, bgConfig);
+      setPipeline(prev => ({ ...prev, step2Result: processed }));
+    } catch (err) {
+      setError(t.bgProcessError);
+    } finally {
+      setAppState(AppState.PREVIEW);
+    }
+  };
+
+  // Step 3: Crop Logic
+  // Apply Crop updates the pipeline for the FINAL step. 
+  // Note: cropImage is currently destructive in valid session flow in old code.
+  // Here, we update step2Result (the input to Step 3) with the cropped version.
+  const handleApplyCrop = async () => {
+    // Input is current display image (which is step2Result at this point)
+    const inputImage = currentDisplayImage;
+    if (!inputImage || !currentCrop.current) return;
+    try {
+      const croppedImage = await cropImage(inputImage, currentCrop.current);
+      // We update step2Result because Step 3 uses it as input for Splitting.
+      setPipeline(prev => ({ ...prev, step2Result: croppedImage }));
       setIsCropping(false);
     } catch (err) {
       setError(t.cropError);
@@ -81,10 +148,11 @@ function App() {
   };
 
   const handleDownload = async () => {
-    if (!imageSrc) return;
+    const finalImage = currentDisplayImage;
+    if (!finalImage) return;
     setAppState(AppState.PROCESSING);
     try {
-      await splitImage(imageSrc, rows, cols, fileName, format, quality);
+      await splitImage(finalImage, rows, cols, fileName, format, quality);
     } catch (err) {
       setError(t.processError);
     } finally {
@@ -93,16 +161,27 @@ function App() {
   };
 
   const handleDownloadSelected = async () => {
-    if (!imageSrc || selectedTiles.size === 0) return;
+    const finalImage = currentDisplayImage;
+    if (!finalImage || selectedTiles.size === 0) return;
     setAppState(AppState.PROCESSING);
     try {
-      await splitImage(imageSrc, rows, cols, fileName, format, quality, selectedTiles);
+      await splitImage(finalImage, rows, cols, fileName, format, quality, selectedTiles);
     } catch (err) {
       setError(t.selectedError);
     } finally {
       setAppState(AppState.PREVIEW);
     }
   };
+
+  const handleReset = () => {
+      setPipeline({ original: null, step1Result: null, step2Result: null });
+      setAppState(AppState.IDLE);
+      setCurrentStep(1);
+  };
+
+  // Auto re-apply BG removal if we move to step 2 and have defaults? 
+  // No, let the user click "Update Preview" or tweak slider. 
+  // But initially, Step 2 Result = Step 1 Result (set in handleEnhancement or processFile).
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans selection:bg-indigo-100">
@@ -145,10 +224,22 @@ function App() {
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
             <div className="lg:col-span-8 xl:col-span-9 flex flex-col">
-              {imageSrc && <ImagePreview imageSrc={imageSrc} rows={rows} cols={cols} selectedTiles={selectedTiles} onToggleTile={(i)=>setSelectedTiles(prev=>{const n=new Set(prev); n.has(i)?n.delete(i):n.add(i); return n})} isCropping={isCropping} onUpdateCrop={(c)=>currentCrop.current=c} onReset={()=>setAppState(AppState.IDLE)} lang={lang} />}
+              {currentDisplayImage && <ImagePreview imageSrc={currentDisplayImage} rows={rows} cols={cols} selectedTiles={selectedTiles} onToggleTile={(i)=>setSelectedTiles(prev=>{const n=new Set(prev); n.has(i)?n.delete(i):n.add(i); return n})} isCropping={isCropping} onUpdateCrop={(c)=>currentCrop.current=c} onReset={handleReset} lang={lang} />}
             </div>
             <div className="lg:col-span-4 xl:col-span-3">
-              <ControlPanel rows={rows} cols={cols} onRowsChange={setRows} onColsChange={setCols} onReset={()=>setAppState(AppState.IDLE)} onDownload={handleDownload} isProcessing={appState === AppState.PROCESSING} format={format} onFormatChange={setFormat} quality={quality} onQualityChange={setQuality} selectedCount={selectedTiles.size} onDownloadSelected={handleDownloadSelected} isCropping={isCropping} onToggleCrop={()=>setIsCropping(true)} onApplyCrop={handleApplyCrop} onCancelCrop={()=>setIsCropping(false)} bgConfig={bgConfig} onBgConfigChange={(c)=>setBgConfig(p=>({...p, ...c}))} onApplyBgRemoval={handleBgRemoval} lang={lang} />
+              <ControlPanel 
+                  currentStep={currentStep} onStepChange={setCurrentStep}
+                  rows={rows} cols={cols} onRowsChange={setRows} onColsChange={setCols} 
+                  onReset={handleReset} 
+                  onDownload={handleDownload} isProcessing={appState === AppState.PROCESSING} 
+                  format={format} onFormatChange={setFormat} 
+                  quality={quality} onQualityChange={setQuality} 
+                  selectedCount={selectedTiles.size} onDownloadSelected={handleDownloadSelected} 
+                  isCropping={isCropping} onToggleCrop={()=>setIsCropping(true)} onApplyCrop={handleApplyCrop} onCancelCrop={()=>setIsCropping(false)} 
+                  bgConfig={bgConfig} onBgConfigChange={(c)=>setBgConfig(p=>({...p, ...c}))} onApplyBgRemoval={handleBgRemoval} 
+                  enhanceConfig={enhanceConfig} onEnhanceConfigChange={(c)=>setEnhanceConfig(p=>({...p, ...c}))} onApplyEnhance={handleEnhancement} isEnhanceApplied={isEnhanceApplied}
+                  lang={lang} 
+              />
             </div>
           </div>
         )}

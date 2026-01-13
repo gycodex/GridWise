@@ -27,6 +27,11 @@ export interface BackgroundConfig {
   previewBg: boolean;
 }
 
+export interface EnhanceConfig {
+  scale: 1 | 2 | 4;
+  sharpness: number; // 0-100
+}
+
 export interface CropData {
   x: number; // percentage 0-1
   y: number; // percentage 0-1
